@@ -5,7 +5,7 @@
 use std::collections::HashMap;
 
 use crate::instr_table::{find_by_mnemonic, Operand};
-use crate::lexer::lex;
+use crate::lexer::{lex, DataItem, LineKind};
 
 #[derive(Debug)]
 pub struct AsmError {
@@ -38,19 +38,28 @@ pub fn assemble(source: &str, origin: u16) -> Result<Vec<u8>, AsmError> {
             symbols.insert(label.clone(), addr as u16);
         }
 
-        if let Some(mnemonic) = &line.mnemonic {
-            let def = find_by_mnemonic(mnemonic).ok_or_else(|| AsmError {
-                line_no: line.line_no,
-                message: format!("알 수 없는 명령어 '{}'", mnemonic),
-            })?;
-            addr += def.encoded_len() as u32;
-
-            if addr > 0x10000 {
-                return Err(AsmError {
+        match &line.kind {
+            Some(LineKind::Instr { mnemonic, .. }) => {
+                let def = find_by_mnemonic(mnemonic).ok_or_else(|| AsmError {
                     line_no: line.line_no,
-                    message: "64KB 메모리 범위 초과".to_string(),
-                });
+                    message: format!("알 수 없는 명령어 '{}'", mnemonic),
+                })?;
+                addr += def.encoded_len() as u32;
             }
+            Some(LineKind::Db(items)) => {
+                addr += data_byte_len(items, 1) as u32;
+            }
+            Some(LineKind::Dw(items)) => {
+                addr += data_byte_len(items, 2) as u32;
+            }
+            None => {}
+        }
+
+        if addr > 0x10000 {
+            return Err(AsmError {
+                line_no: line.line_no,
+                message: "64KB 메모리 범위 초과".to_string(),
+            });
         }
     }
 
@@ -58,26 +67,34 @@ pub fn assemble(source: &str, origin: u16) -> Result<Vec<u8>, AsmError> {
     let mut out = Vec::new();
 
     for line in &lines {
-        let Some(mnemonic) = &line.mnemonic else { continue };
-        // pass1에서 이미 find_by_mnemonic 검증 통과한 라인만 여기 옴
-        let def = find_by_mnemonic(mnemonic).unwrap();
+        match &line.kind {
+            None => {}
+            Some(LineKind::Instr { mnemonic, operands }) => {
+                let def = find_by_mnemonic(mnemonic).unwrap();
 
-        if line.operands.len() != def.operands.len() {
-            return Err(AsmError {
-                line_no: line.line_no,
-                message: format!(
-                    "'{}'는 operand {}개 필요한데 {}개 받음",
-                    mnemonic,
-                    def.operands.len(),
-                    line.operands.len()
-                ),
-            });
-        }
+                if operands.len() != def.operands.len() {
+                    return Err(AsmError {
+                        line_no: line.line_no,
+                        message: format!(
+                            "'{}'는 operand {}개 필요한데 {}개 받음",
+                            mnemonic,
+                            def.operands.len(),
+                            operands.len()
+                        ),
+                    });
+                }
 
-        out.push(def.opcode);
-
-        for (token, shape) in line.operands.iter().zip(def.operands.iter()) {
-            encode_operand(token, *shape, &symbols, line.line_no, &mut out)?;
+                out.push(def.opcode);
+                for (token, shape) in operands.iter().zip(def.operands.iter()) {
+                    encode_operand(token, *shape, &symbols, line.line_no, &mut out)?;
+                }
+            }
+            Some(LineKind::Db(items)) => {
+                encode_data_items(items, 1, &symbols, line.line_no, &mut out)?;
+            }
+            Some(LineKind::Dw(items)) => {
+                encode_data_items(items, 2, &symbols, line.line_no, &mut out)?;
+            }
         }
     }
 
@@ -120,6 +137,76 @@ fn encode_operand(
             // vm.rs의 get_high_low()가 LOW 먼저 읽고 HIGH 나중에 읽으니까 그 순서 그대로
             out.push((value & 0xFF) as u8);
             out.push((value >> 8) as u8);
+        }
+    }
+    Ok(())
+}
+
+/// pass1용: items가 차지할 바이트 수 계산 (unit = 1이면 db, 2면 dw)
+fn data_byte_len(items: &[DataItem], unit: usize) -> usize {
+    items.iter().map(|item| match item {
+        DataItem::Value(_) => unit,
+        DataItem::Str(s) => s.len(), // db 전용 — dw에서 문자열 쓰면 encode 단계에서 에러냄
+    }).sum()
+}
+
+/// pass2용: items를 실제 바이트로 인코딩
+fn encode_data_items(
+    items: &[DataItem],
+    unit: usize,
+    symbols: &HashMap<String, u16>,
+    line_no: usize,
+    out: &mut Vec<u8>,
+) -> Result<(), AsmError> {
+    for item in items {
+        match item {
+            DataItem::Str(s) => {
+                if unit == 2 {
+                    return Err(AsmError {
+                        line_no,
+                        message: "dw에는 문자열 리터럴 못 씀, db 써야 함".to_string(),
+                    });
+                }
+                // 이스케이프 시퀀스 처리
+                let mut chars = s.chars().peekable();
+                while let Some(c) = chars.next() {
+                    let byte = if c == '\\' {
+                        match chars.next() {
+                            Some('n')  => b'\n',
+                            Some('t')  => b'\t',
+                            Some('0')  => b'\0',
+                            Some('\\') => b'\\',
+                            Some('"')  => b'"',
+                            Some(other) => other as u8,
+                            None => b'\\',
+                        }
+                    } else {
+                        c as u8
+                    };
+                    out.push(byte);
+                }
+            }
+            DataItem::Value(token) => {
+                let value = resolve_value(token, symbols, line_no)?;
+                if unit == 1 {
+                    if value > 0xFF {
+                        return Err(AsmError {
+                            line_no,
+                            message: format!("db: '{token}'는 8비트 범위 초과"),
+                        });
+                    }
+                    out.push(value as u8);
+                } else {
+                    if value > 0xFFFF {
+                        return Err(AsmError {
+                            line_no,
+                            message: format!("dw: '{token}'는 16비트 범위 초과"),
+                        });
+                    }
+                    out.push((value & 0xFF) as u8);
+                    out.push((value >> 8) as u8);
+                }
+            }
         }
     }
     Ok(())
