@@ -15,7 +15,7 @@ pub struct AsmError {
 
 impl std::fmt::Display for AsmError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}번째 줄: {}", self.line_no, self.message)
+        write!(f, "Line {}: {}", self.line_no, self.message)
     }
 }
 
@@ -32,7 +32,7 @@ pub fn assemble(source: &str, origin: u16) -> Result<Vec<u8>, AsmError> {
             if symbols.contains_key(label) {
                 return Err(AsmError {
                     line_no: line.line_no,
-                    message: format!("라벨 '{}' 중복 정의", label),
+                        message: format!("Label '{}' already defined", label),
                 });
             }
             symbols.insert(label.clone(), addr as u16);
@@ -42,7 +42,7 @@ pub fn assemble(source: &str, origin: u16) -> Result<Vec<u8>, AsmError> {
             Some(LineKind::Instr { mnemonic, .. }) => {
                 let def = find_by_mnemonic(mnemonic).ok_or_else(|| AsmError {
                     line_no: line.line_no,
-                    message: format!("알 수 없는 명령어 '{}'", mnemonic),
+                    message: format!("Unknown instruction '{}'", mnemonic),
                 })?;
                 addr += def.encoded_len() as u32;
             }
@@ -58,7 +58,7 @@ pub fn assemble(source: &str, origin: u16) -> Result<Vec<u8>, AsmError> {
         if addr > 0x10000 {
             return Err(AsmError {
                 line_no: line.line_no,
-                message: "64KB 메모리 범위 초과".to_string(),
+                    message: "Exceeds 64KB memory range".to_string(),
             });
         }
     }
@@ -76,7 +76,7 @@ pub fn assemble(source: &str, origin: u16) -> Result<Vec<u8>, AsmError> {
                     return Err(AsmError {
                         line_no: line.line_no,
                         message: format!(
-                            "'{}'는 operand {}개 필요한데 {}개 받음",
+                            "'{}' requires {} operands but got {}",
                             mnemonic,
                             def.operands.len(),
                             operands.len()
@@ -112,7 +112,7 @@ fn encode_operand(
         Operand::Reg => {
             let reg = parse_register(token).ok_or_else(|| AsmError {
                 line_no,
-                message: format!("'{}'는 올바른 레지스터가 아님 (r0~r15)", token),
+                message: format!("'{}' is not a valid register (r0~r15)", token),
             })?;
             out.push(reg);
         }
@@ -121,7 +121,7 @@ fn encode_operand(
             if value > 0xFF {
                 return Err(AsmError {
                     line_no,
-                    message: format!("'{}'는 8비트 범위(0~255) 초과", token),
+                        message: format!("'{}' exceeds 8-bit range (0-255)", token),
                 });
             }
             out.push(value as u8);
@@ -131,7 +131,7 @@ fn encode_operand(
             if value > 0xFFFF {
                 return Err(AsmError {
                     line_no,
-                    message: format!("'{}'는 16비트 범위(0~65535) 초과", token),
+                        message: format!("'{}' exceeds 16-bit range (0-65535)", token),
                 });
             }
             // vm.rs의 get_high_low()가 LOW 먼저 읽고 HIGH 나중에 읽으니까 그 순서 그대로
@@ -164,7 +164,7 @@ fn encode_data_items(
                 if unit == 2 {
                     return Err(AsmError {
                         line_no,
-                        message: "dw에는 문자열 리터럴 못 씀, db 써야 함".to_string(),
+                        message: "String literals are not allowed in 'dw'; use 'db' instead".to_string(),
                     });
                 }
                 // 이스케이프 시퀀스 처리
@@ -192,7 +192,7 @@ fn encode_data_items(
                     if value > 0xFF {
                         return Err(AsmError {
                             line_no,
-                            message: format!("db: '{token}'는 8비트 범위 초과"),
+                            message: format!("db: '{token}' exceeds 8-bit range"),
                         });
                     }
                     out.push(value as u8);
@@ -200,7 +200,7 @@ fn encode_data_items(
                     if value > 0xFFFF {
                         return Err(AsmError {
                             line_no,
-                            message: format!("dw: '{token}'는 16비트 범위 초과"),
+                            message: format!("dw: '{token}' exceeds 16-bit range"),
                         });
                     }
                     out.push((value & 0xFF) as u8);
@@ -224,7 +224,7 @@ fn resolve_value(token: &str, symbols: &HashMap<String, u16>, line_no: usize) ->
     if let Some(hex) = token.strip_prefix("0x").or_else(|| token.strip_prefix("0X")) {
         return u32::from_str_radix(hex, 16).map_err(|_| AsmError {
             line_no,
-            message: format!("'{}'는 올바른 16진수가 아님", token),
+            message: format!("'{}' is not a valid hexadecimal number", token),
         });
     }
 
@@ -234,6 +234,6 @@ fn resolve_value(token: &str, symbols: &HashMap<String, u16>, line_no: usize) ->
 
     symbols.get(token).map(|&a| a as u32).ok_or_else(|| AsmError {
         line_no,
-        message: format!("'{}'는 숫자도 아니고 정의된 라벨도 아님", token),
+        message: format!("'{}' is neither a number nor a defined label", token),
     })
 }

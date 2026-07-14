@@ -4,15 +4,22 @@ mod lexer;
 
 use std::env;
 use std::fs;
+use std::io::Write; // ADDED
 use std::process::ExitCode;
 
 fn main() -> ExitCode {
     let args: Vec<String> = env::args().collect();
     let program = args.first().map(|s| s.as_str()).unwrap_or("asmtool");
 
+    let program_name = std::path::Path::new(program)
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or(program);
+
     let mut input_path: Option<String> = None;
     let mut output_path: Option<String> = None;
     let mut origin: u16 = 0xC100;
+    let mut stdout_mode = false; // ADDED
 
     let mut i = 1;
     while i < args.len() {
@@ -20,46 +27,65 @@ fn main() -> ExitCode {
             "-o" | "--output" => {
                 i += 1;
                 let Some(val) = args.get(i) else {
-                    eprintln!("에러: {} 다음에 출력 경로가 와야함", args[i - 1]);
-                    print_usage(program);
+                    eprintln!("Error: {} requires an output path", args[i - 1]);
+                    print_usage(program_name);
                     return ExitCode::FAILURE;
                 };
                 output_path = Some(val.clone());
             }
+
+            "--stdout" => {
+                stdout_mode = true;
+            }
+
             "--origin" => {
                 i += 1;
                 let Some(val) = args.get(i) else {
-                    eprintln!("에러: --origin 다음에 주소값이 와야함");
-                    print_usage(program);
+                    eprintln!("Error: --origin requires an address");
+                    print_usage(program_name);
                     return ExitCode::FAILURE;
                 };
+
                 match parse_addr(val) {
                     Some(addr) => origin = addr,
                     None => {
-                        eprintln!("에러: '{}'는 올바른 주소가 아님 (10진수 또는 0x16진수)", val);
+                        eprintln!(
+                            "Error: '{}' is not a valid address (decimal or 0xhex)",
+                            val
+                        );
                         return ExitCode::FAILURE;
                     }
                 }
             }
+
             "-h" | "--help" => {
-                print_usage(program);
+                print_usage(program_name);
                 return ExitCode::SUCCESS;
             }
+
             other if input_path.is_none() => {
                 input_path = Some(other.to_string());
             }
+
             other => {
-                eprintln!("에러: 알 수 없는 인자 '{}'", other);
-                print_usage(program);
+                eprintln!("Error: unknown argument '{}'", other);
+                print_usage(program_name);
                 return ExitCode::FAILURE;
             }
         }
+
         i += 1;
     }
 
+    // ADDED
+    if stdout_mode && output_path.is_some() {
+        eprintln!("Error: cannot use --stdout and -o/--output together");
+        return ExitCode::FAILURE;
+    }
+
     let Some(input_path) = input_path else {
-        eprintln!("에러: 입력 파일 안 줌");
-        print_usage(program);
+        eprintln!("Error: no input file provided");
+        print_usage(program_name);
         return ExitCode::FAILURE;
     };
 
@@ -68,7 +94,7 @@ fn main() -> ExitCode {
     let source = match fs::read_to_string(&input_path) {
         Ok(s) => s,
         Err(e) => {
-            eprintln!("에러: '{}' 못 읽음 ({e})", input_path);
+            eprintln!("Error: failed to read '{}': {e}", input_path);
             return ExitCode::FAILURE;
         }
     };
@@ -76,29 +102,38 @@ fn main() -> ExitCode {
     let bytes = match encoder::assemble(&source, origin) {
         Ok(b) => b,
         Err(e) => {
-            // AsmError의 Display가 "N번째 줄: 메시지" 형태라 파일명만 앞에 붙임
             eprintln!("{input_path}: {e}");
             return ExitCode::FAILURE;
         }
     };
 
-    if let Err(e) = fs::write(&output_path, &bytes) {
-        eprintln!("에러: '{}'에 못 씀 ({e})", output_path);
-        return ExitCode::FAILURE;
+    // CHANGED
+    if stdout_mode {
+        if let Err(e) = std::io::stdout().write_all(&bytes) {
+            eprintln!("Error: failed to write to stdout: {e}");
+            return ExitCode::FAILURE;
+        }
+    } else {
+        if let Err(e) = fs::write(&output_path, &bytes) {
+            eprintln!("Error: failed to write to '{}': {e}", output_path);
+            return ExitCode::FAILURE;
+        }
+
+        println!(
+            "{input_path} → {output_path} ({} bytes, origin 0x{origin:04X})",
+            bytes.len()
+        );
     }
 
-    println!(
-        "{input_path} → {output_path} ({} bytes, origin 0x{origin:04X})",
-        bytes.len()
-    );
     ExitCode::SUCCESS
 }
 
 fn print_usage(program: &str) {
-    eprintln!("사용법: {program} <input.asm> [-o <output.bin>] [--origin <addr>]");
+    eprintln!("Usage: {program} <input.asm> [-o <output.bin>] [--origin <addr>] [--stdout]");
     eprintln!();
-    eprintln!("  -o, --output <path>   출력 바이너리 경로 (기본값: <input>.bin)");
-    eprintln!("  --origin <addr>       시작 주소, 10진수 또는 0x16진수 (기본값: 0xC100)");
+    eprintln!("  -o, --output <path>   Output binary path (default: <input>.bin)");
+    eprintln!("  --origin <addr>       Start address, decimal or 0xhex (default: 0xC100)");
+    eprintln!("  --stdout              Write raw binary to stdout");
 }
 
 fn parse_addr(s: &str) -> Option<u16> {
