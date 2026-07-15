@@ -1,6 +1,13 @@
 [package]
-name = "RVA"
+name = "rustvm-assembler"
 version = "0.1.0"
 edition = "2024"
+description = "Custom assembler for rustVM"
+license = "MIT"
+repository = "https://github.com/Jjoon0513/rustVM-Assembler"
 
 [dependencies]
+
+[[bin]]
+name = "rva"
+path = "src/main.rs"
