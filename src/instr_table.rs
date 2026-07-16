@@ -120,6 +120,7 @@ pub fn find_by_mnemonic(mnemonic: &str) -> Option<&'static InstrDef> {
 }
 
 /// step.rs 디스패치나 디스어셈블러가 호출
+#[allow(dead_code)]
 pub fn find_by_opcode(opcode: u8) -> Option<&'static InstrDef> {
     INSTRUCTIONS.iter().find(|i| i.opcode == opcode)
 }
