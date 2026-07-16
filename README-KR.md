@@ -1,3 +1,9 @@
+[![Crates.io](https://img.shields.io/crates/v/rustVM-Assembler)](https://crates.io/crates/rustVM-Aseembler)
+[![License](https://img.shields.io/github/license/Jjoon0513/rustVM-Assembler)](LICENSE)
+
+
+[English](README.md) | *한국어*
+
 # Rust Vm Assembler
 
 `rustVm-Assembler`는 16비트 **rustVM** 명령어 집합을 위한 2패스 어셈블러입니다.
