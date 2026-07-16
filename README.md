@@ -27,14 +27,14 @@ It uses a NASM-inspired syntax while providing an encoder and opcode table speci
 ### Install from crates.io
 
 ```bash
-cargo install rva
+cargo install rustvm-assembler
 ```
 
 ### Install from source
 
 ```bash
-git clone https://github.com/Jjoon0513/rva.git
-cd rva
+git clone https://github.com/Jjoon0513/rustVM-Assembler.git
+cd rustVM-Assembler
 cargo install --path .
 ```
 
