@@ -1,6 +1,6 @@
 # Rust Vm Assembler
 
-`rustVm-Assembler `는 16비트 **rustVM** 명령어 집합을 위한 2패스 어셈블러입니다.
+`rustVm-Assembler`는 16비트 **rustVM** 명령어 집합을 위한 2패스 어셈블러입니다.
 
 NASM과 유사한 문법을 사용하며, 인코더와 명령어 테이블은 rustVM에 맞게 직접 설계되었습니다.
 
