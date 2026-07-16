@@ -2,7 +2,7 @@
 [![License](https://img.shields.io/github/license/Jjoon0513/rustVM-Assembler)](LICENSE)
 
 
-*English* | [한국어](README-ko.md)
+*English* | [한국어](README-KR.md)
 # Rust Vm Assembler
 
 `RustVm-Assembler` is a two-pass assembler for the 16-bit **rustVM** instruction set.
