@@ -1,10 +1,14 @@
 [package]
 name = "rustvm-assembler"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2024"
 description = "Custom assembler for rustVM"
-license = "MIT"
+license = "MIT OR Apache-2.0"
 repository = "https://github.com/Jjoon0513/rustVM-Assembler"
+documentation = "https://docs.rs/rustvm-assembler"   # 나중에 라이브러리 생기면
+readme = "README.md"
+keywords = ["assembler", "vm", "assembly", "compiler"]
+categories = ["command-line-utilities", "development-tools"]
 
 [dependencies]
 

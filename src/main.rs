@@ -20,6 +20,7 @@ fn main() -> ExitCode {
     let mut output_path: Option<String> = None;
     let mut origin: u16 = 0xC100;
     let mut stdout_mode = false; // ADDED
+    let version = "0.1.1";
 
     let mut i = 1;
     while i < args.len() {
@@ -56,6 +57,11 @@ fn main() -> ExitCode {
                         return ExitCode::FAILURE;
                     }
                 }
+            }
+
+            "-v" | "--version" => {
+                println!("RustVm-Assembler: {version}");
+                return ExitCode::SUCCESS;
             }
 
             "-h" | "--help" => {
