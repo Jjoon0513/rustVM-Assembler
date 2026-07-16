@@ -28,14 +28,14 @@ NASM과 유사한 문법을 사용하며, 인코더와 명령어 테이블은 ru
 ### crates.io에서 설치
 
 ```bash
-cargo install rva
+cargo install rustvm-assembler
 ```
 
 ### 소스 코드에서 설치
 
 ```bash
-git clone https://github.com/Jjoon0513/rva.git
-cd rva
+git clone https://github.com/Jjoon0513/rustVM-Assembler.git
+cd rustVM-Assembler
 cargo install --path .
 ```
 
