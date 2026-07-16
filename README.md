@@ -1,3 +1,6 @@
+[![Crates.io](https://img.shields.io/crates/v/rustVM-Assembler)](https://crates.io/crates/rustVM-Aseembler)
+[![License](https://img.shields.io/github/license/Jjoon0513/rustVM-Assembler)](LICENSE)
+
 # Rust Vm Assembler
 
 `RustVm-Assembler` is a two-pass assembler for the 16-bit **rustVM** instruction set.
