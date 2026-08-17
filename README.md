@@ -18,7 +18,6 @@ It uses a NASM-inspired syntax while providing an encoder and opcode table speci
 - `db` / `dw` directives
 - Easy-to-extend lexer, encoder, and opcode table
 - Command-line interface
-- VS Code syntax highlighting extension ([rva-syntax](https://github.com/Jjoon0513/rva-syntax))
 
 ---
 
