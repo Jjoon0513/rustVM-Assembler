@@ -57,6 +57,12 @@ pub const INSTRUCTIONS: &[InstrDef] = &[
     InstrDef { mnemonic: "movi",    opcode: 0x08, operands: &[Reg, Imm16] },
     InstrDef { mnemonic: "movr",    opcode: 0x09, operands: &[Reg, Reg] },
 
+    // ── ISA v2: 0x10 ~ 0x13 ADC/SBB (캐리/빌림 포함 연산, 다중 워드 산술용) ──
+    InstrDef { mnemonic: "adci",    opcode: 0x10, operands: &[Reg, Imm16] },
+    InstrDef { mnemonic: "adcr",    opcode: 0x11, operands: &[Reg, Reg] },
+    InstrDef { mnemonic: "sbbi",    opcode: 0x12, operands: &[Reg, Imm16] },
+    InstrDef { mnemonic: "sbbr",    opcode: 0x13, operands: &[Reg, Reg] },
+
     // ── 0x18 ~ 0x1C ADD/SUB/CMP ──
     InstrDef { mnemonic: "addi",    opcode: 0x18, operands: &[Reg, Imm16] },
     InstrDef { mnemonic: "addr",    opcode: 0x19, operands: &[Reg, Reg] },
@@ -92,6 +98,9 @@ pub const INSTRUCTIONS: &[InstrDef] = &[
     InstrDef { mnemonic: "jl",      opcode: 0x39, operands: &[Imm16] },
     InstrDef { mnemonic: "jle",     opcode: 0x3A, operands: &[Imm16] },
 
+    // ── ISA v2: 0x3B 간접 점프 ──
+    InstrDef { mnemonic: "jmpr",     opcode: 0x3B, operands: &[Reg] },
+
     // ── 0x40 ~ 0x41 스택 ──
     InstrDef { mnemonic: "push",    opcode: 0x40, operands: &[Reg] },
     InstrDef { mnemonic: "pop",     opcode: 0x41, operands: &[Reg] },
@@ -99,6 +108,8 @@ pub const INSTRUCTIONS: &[InstrDef] = &[
     // ── 0x48 ~ 0x49 CALL/RET ──
     InstrDef { mnemonic: "call",    opcode: 0x48, operands: &[Imm16] },
     InstrDef { mnemonic: "ret",     opcode: 0x49, operands: &[] },
+    // ISA v2: 간접 호출 (프레임은 call과 동일)
+    InstrDef { mnemonic: "callr",   opcode: 0x4A, operands: &[Reg] },
 
     // ── 0x50 ~ 0x53 LOAD/STORE ──
     // load 계열: dst가 항상 1번 operand. store 계열: addr가 항상 1번 operand. (아래 한계점 참고)
@@ -107,11 +118,24 @@ pub const INSTRUCTIONS: &[InstrDef] = &[
     InstrDef { mnemonic: "storer",  opcode: 0x52, operands: &[Reg, Reg] },
     InstrDef { mnemonic: "storei",  opcode: 0x53, operands: &[Imm16, Reg] },
 
+    // ── ISA v2: 바이트 / 오프셋 load·store ──
+    // 오프셋(Imm16)은 부호 있는 16비트로 해석되어 base + off 가 16비트 래핑 덧셈으로 계산됨 (예: -4 → base-4).
+    // 바이트 load는 zero-extend, 바이트 store는 src의 하위 바이트만 씀.
+    InstrDef { mnemonic: "loadb",   opcode: 0x54, operands: &[Reg, Reg] },        // dst, addr
+    InstrDef { mnemonic: "loado",   opcode: 0x55, operands: &[Reg, Reg, Imm16] }, // dst, base, off
+    InstrDef { mnemonic: "loadbo",  opcode: 0x56, operands: &[Reg, Reg, Imm16] }, // dst, base, off
+    InstrDef { mnemonic: "storeb",  opcode: 0x58, operands: &[Reg, Reg] },        // addr, src
+    InstrDef { mnemonic: "storeo",  opcode: 0x59, operands: &[Reg, Imm16, Reg] }, // base, off, src
+    InstrDef { mnemonic: "storebo", opcode: 0x5A, operands: &[Reg, Imm16, Reg] }, // base, off, src
+
     // ── 0x60 ~ 0x63 SHIFT ── amount는 Imm16이 아니라 Imm8임
     InstrDef { mnemonic: "shli",    opcode: 0x60, operands: &[Reg, Imm8] },
     InstrDef { mnemonic: "shlr",    opcode: 0x61, operands: &[Reg, Reg] },
     InstrDef { mnemonic: "shri",    opcode: 0x62, operands: &[Reg, Imm8] },
     InstrDef { mnemonic: "shrr",    opcode: 0x63, operands: &[Reg, Reg] },
+    // ISA v2: 산술 우시프트 (부호 유지, amount ≥ 16 이면 부호 비트로 가득 참)
+    InstrDef { mnemonic: "sari",    opcode: 0x64, operands: &[Reg, Imm8] },
+    InstrDef { mnemonic: "sarr",    opcode: 0x65, operands: &[Reg, Reg] },
 ];
 
 /// 어셈블러가 mnemonic 파싱 후 호출
@@ -123,4 +147,33 @@ pub fn find_by_mnemonic(mnemonic: &str) -> Option<&'static InstrDef> {
 #[allow(dead_code)]
 pub fn find_by_opcode(opcode: u8) -> Option<&'static InstrDef> {
     INSTRUCTIONS.iter().find(|i| i.opcode == opcode)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::HashSet;
+
+    #[test]
+    fn opcodes_and_mnemonics_are_unique() {
+        let mut ops = HashSet::new();
+        let mut names = HashSet::new();
+        for i in INSTRUCTIONS {
+            assert!(ops.insert(i.opcode), "opcode 중복: {:#04x} ({})", i.opcode, i.mnemonic);
+            assert!(names.insert(i.mnemonic), "mnemonic 중복: {}", i.mnemonic);
+        }
+    }
+
+    #[test]
+    fn isa_v2_encoded_lengths() {
+        let len = |m: &str| find_by_mnemonic(m).unwrap().encoded_len();
+        assert_eq!(len("adci"), 4);
+        assert_eq!(len("adcr"), 3);
+        assert_eq!(len("jmpr"), 2);
+        assert_eq!(len("callr"), 2);
+        assert_eq!(len("loadb"), 3);
+        assert_eq!(len("loado"), 5);
+        assert_eq!(len("storeo"), 5);
+        assert_eq!(len("sari"), 3);
+    }
 }

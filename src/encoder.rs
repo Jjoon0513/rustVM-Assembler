@@ -295,6 +295,50 @@ mod tests {
         assert_eq!(asm("x: jmp x"), [0x30, 0, 0]);
     }
 
+    // ── ISA v2 ──
+    // 아래 바이트열은 rustVM 쪽 `isa_v2_tests` 의 인코딩과 **동일**해야 한다 (양쪽 동기화 체크).
+    #[test]
+    fn isa_v2_carry_and_shift() {
+        assert_eq!(asm("adci r1, 0"), [0x10, 1, 0, 0]);
+        assert_eq!(asm("adcr r1, r3"), [0x11, 1, 3]);
+        assert_eq!(asm("sbbi r1, 0"), [0x12, 1, 0, 0]);
+        assert_eq!(asm("sbbr r1, r3"), [0x13, 1, 3]);
+        assert_eq!(asm("sari r0, 1"), [0x64, 0, 1]);
+        assert_eq!(asm("sarr r4, r5"), [0x65, 4, 5]);
+    }
+    #[test]
+    fn isa_v2_indirect_jump_and_call() {
+        assert_eq!(asm("jmpr r0"), [0x3B, 0]);
+        assert_eq!(asm("callr r7"), [0x4A, 7]);
+        assert_eq!(asm("jmpr sp"), [0x3B, 17]);
+    }
+    #[test]
+    fn isa_v2_byte_and_offset_memory() {
+        assert_eq!(asm("loadb r1, r0"), [0x54, 1, 0]);
+        assert_eq!(asm("storeb r3, r2"), [0x58, 3, 2]);
+        assert_eq!(asm("loado r1, r0, 2"), [0x55, 1, 0, 2, 0]);
+        assert_eq!(asm("loado r2, r0, -4"), [0x55, 2, 0, 0xFC, 0xFF]);
+        assert_eq!(asm("loadbo r3, r0, -3"), [0x56, 3, 0, 0xFD, 0xFF]);
+        assert_eq!(asm("storeo r0, -4, r4"), [0x59, 0, 0xFC, 0xFF, 4]);
+        assert_eq!(asm("storebo r0, -3, r5"), [0x5A, 0, 0xFD, 0xFF, 5]);
+        // 스택 프레임 접근 (SP 기준)
+        assert_eq!(asm("loado r0, sp, 4"), [0x55, 0, 17, 4, 0]);
+        assert_eq!(asm("storeo sp, -2, r1"), [0x59, 17, 0xFE, 0xFF, 1]);
+    }
+    #[test]
+    fn isa_v2_zr_destination_and_operand_count() {
+        assert_eq!(asm("loado zr, r0, 0"), [0x55, 0x10, 0, 0, 0]);
+        assert!(asm_err("loado r1, r0").message.contains("requires 3 operands"));
+        // 피연산자 순서/형태가 (Reg, Imm16, Reg)에 맞지 않으면 에러
+        assert!(asm_err("storeo r0, r1, r2").message.contains("neither a number"));
+        assert!(asm_err("storeo r0, 4, 5").message.contains("not a valid register"));
+    }
+    #[test]
+    fn isa_v2_label_as_offset_base_and_branch_target() {
+        // 라벨은 Imm16 자리에 쓸 수 있다 (jmpr 은 레지스터라 movi로 주소를 만든다)
+        assert_eq!(asm("movi r0, f\njmpr r0\nf: nop"), [0x08, 0, 6, 0, 0x3B, 0, 0x00]);
+    }
+
     // ── 문자열 ──
     #[test]
     fn semicolon_and_slashes_inside_string_are_not_comments() {
