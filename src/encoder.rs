@@ -21,7 +21,10 @@ impl std::fmt::Display for AsmError {
 
 /// origin: 첫 명령어가 배치될 메모리 주소 (예: 커널 코드면 0xC100)
 pub fn assemble(source: &str, origin: u16) -> Result<Vec<u8>, AsmError> {
-    let lines = lex(source);
+    let lines = lex(source).map_err(|e| AsmError {
+        line_no: e.line_no,
+        message: e.message,
+    })?;
 
     // ── pass 1: 라벨 주소 계산 ──
     let mut symbols: HashMap<String, u16> = HashMap::new();
@@ -112,28 +115,29 @@ fn encode_operand(
         Operand::Reg => {
             let reg = parse_register(token).ok_or_else(|| AsmError {
                 line_no,
-                message: format!("'{}' is not a valid register (r0~r15)", token),
+                message: format!("'{}' is not a valid register (r0~r17, zr, sp)", token),
             })?;
             out.push(reg);
         }
         Operand::Imm8 => {
             let value = resolve_value(token, symbols, line_no)?;
-            if value > 0xFF {
+            if !(-128..=0xFF).contains(&value) {
                 return Err(AsmError {
                     line_no,
-                        message: format!("'{}' exceeds 8-bit range (0-255)", token),
+                    message: format!("'{}' exceeds 8-bit range (-128..255)", token),
                 });
             }
-            out.push(value as u8);
+            out.push(value as u8); // 음수는 2의 보수로 잘림
         }
         Operand::Imm16 => {
             let value = resolve_value(token, symbols, line_no)?;
-            if value > 0xFFFF {
+            if !(-0x8000..=0xFFFF).contains(&value) {
                 return Err(AsmError {
                     line_no,
-                        message: format!("'{}' exceeds 16-bit range (0-65535)", token),
+                    message: format!("'{}' exceeds 16-bit range (-32768..65535)", token),
                 });
             }
+            let value = value as u16; // 음수는 2의 보수
             // vm.rs의 get_high_low()가 LOW 먼저 읽고 HIGH 나중에 읽으니까 그 순서 그대로
             out.push((value & 0xFF) as u8);
             out.push((value >> 8) as u8);
@@ -146,7 +150,7 @@ fn encode_operand(
 fn data_byte_len(items: &[DataItem], unit: usize) -> usize {
     items.iter().map(|item| match item {
         DataItem::Value(_) => unit,
-        DataItem::Str(s) => s.len(), // db 전용 — dw에서 문자열 쓰면 encode 단계에서 에러냄
+        DataItem::Str(bytes) => bytes.len(), // db 전용 — dw에서 문자열 쓰면 encode 단계에서 에러냄
     }).sum()
 }
 
@@ -160,36 +164,20 @@ fn encode_data_items(
 ) -> Result<(), AsmError> {
     for item in items {
         match item {
-            DataItem::Str(s) => {
+            DataItem::Str(bytes) => {
                 if unit == 2 {
                     return Err(AsmError {
                         line_no,
                         message: "String literals are not allowed in 'dw'; use 'db' instead".to_string(),
                     });
                 }
-                // 이스케이프 시퀀스 처리
-                let mut chars = s.chars().peekable();
-                while let Some(c) = chars.next() {
-                    let byte = if c == '\\' {
-                        match chars.next() {
-                            Some('n')  => b'\n',
-                            Some('t')  => b'\t',
-                            Some('0')  => b'\0',
-                            Some('\\') => b'\\',
-                            Some('"')  => b'"',
-                            Some(other) => other as u8,
-                            None => b'\\',
-                        }
-                    } else {
-                        c as u8
-                    };
-                    out.push(byte);
-                }
+                // 이스케이프/UTF-8 인코딩은 렉서에서 끝났으므로 그대로 출력 (pass 1 길이와 항상 일치)
+                out.extend_from_slice(bytes);
             }
             DataItem::Value(token) => {
                 let value = resolve_value(token, symbols, line_no)?;
                 if unit == 1 {
-                    if value > 0xFF {
+                    if !(-128..=0xFF).contains(&value) {
                         return Err(AsmError {
                             line_no,
                             message: format!("db: '{token}' exceeds 8-bit range"),
@@ -197,12 +185,13 @@ fn encode_data_items(
                     }
                     out.push(value as u8);
                 } else {
-                    if value > 0xFFFF {
+                    if !(-0x8000..=0xFFFF).contains(&value) {
                         return Err(AsmError {
                             line_no,
                             message: format!("dw: '{token}' exceeds 16-bit range"),
                         });
                     }
+                    let value = value as u16;
                     out.push((value & 0xFF) as u8);
                     out.push((value >> 8) as u8);
                 }
@@ -212,28 +201,143 @@ fn encode_data_items(
     Ok(())
 }
 
+/// r0~r17, 그리고 별칭 zr(=r16, 제로 레지스터) / sp(=r17, 스택 포인터)
 fn parse_register(token: &str) -> Option<u8> {
-    let digits = token.to_lowercase();
-    let digits = digits.strip_prefix('r')?;
+    let lower = token.to_lowercase();
+    match lower.as_str() {
+        "zr" => return Some(16),
+        "sp" => return Some(17),
+        _ => {}
+    }
+    let digits = lower.strip_prefix('r')?;
     let n: u8 = digits.parse().ok()?;
-    (n <= 15).then_some(n)
+    (n <= 17).then_some(n)
 }
 
-/// 10진수 / 0x16진수 숫자 리터럴, 또는 라벨 이름을 주소값으로 변환
-fn resolve_value(token: &str, symbols: &HashMap<String, u16>, line_no: usize) -> Result<u32, AsmError> {
-    if let Some(hex) = token.strip_prefix("0x").or_else(|| token.strip_prefix("0X")) {
-        return u32::from_str_radix(hex, 16).map_err(|_| AsmError {
+/// 10진수 / 0x16진수 숫자 리터럴(앞에 `-` 허용), 또는 라벨 이름을 값으로 변환
+fn resolve_value(token: &str, symbols: &HashMap<String, u16>, line_no: usize) -> Result<i64, AsmError> {
+    let (neg, body) = match token.strip_prefix('-') {
+        Some(rest) => (true, rest),
+        None => (false, token),
+    };
+
+    let parsed = if let Some(hex) = body.strip_prefix("0x").or_else(|| body.strip_prefix("0X")) {
+        Some(i64::from_str_radix(hex, 16).map_err(|_| AsmError {
             line_no,
             message: format!("'{}' is not a valid hexadecimal number", token),
-        });
+        })?)
+    } else {
+        body.parse::<i64>().ok()
+    };
+
+    if let Some(n) = parsed {
+        return Ok(if neg { -n } else { n });
     }
 
-    if let Ok(n) = token.parse::<u32>() {
-        return Ok(n);
+    if !neg {
+        if let Some(&a) = symbols.get(token) {
+            return Ok(a as i64);
+        }
     }
 
-    symbols.get(token).map(|&a| a as u32).ok_or_else(|| AsmError {
+    Err(AsmError {
         line_no,
         message: format!("'{}' is neither a number nor a defined label", token),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn asm(src: &str) -> Vec<u8> {
+        assemble(src, 0).expect("assemble failed")
+    }
+    fn asm_err(src: &str) -> AsmError {
+        assemble(src, 0).expect_err("expected an error")
+    }
+
+    // ── 레지스터 ──
+    #[test]
+    fn zr_sp_aliases_and_numbers() {
+        assert_eq!(asm("movr r0, zr"), [0x09, 0, 16]);
+        assert_eq!(asm("movr sp, r1"), [0x09, 17, 1]);
+        assert_eq!(asm("movr R16, R17"), [0x09, 16, 17]);
+        assert_eq!(asm("push SP\npop ZR"), [0x40, 17, 0x41, 16]);
+    }
+    #[test]
+    fn register_out_of_range_is_error() {
+        assert!(asm_err("movr r0, r18").message.contains("not a valid register"));
+        assert!(asm_err("movr r0, r256").message.contains("not a valid register"));
+    }
+
+    // ── 음수 즉시값 ──
+    #[test]
+    fn negative_immediates() {
+        assert_eq!(asm("addi r0, -1"), [0x18, 0, 0xFF, 0xFF]);
+        assert_eq!(asm("subi r1, -0x10"), [0x1A, 1, 0xF0, 0xFF]);
+        assert_eq!(asm("movi r0, -32768"), [0x08, 0, 0x00, 0x80]);
+        assert_eq!(asm("shli r0, -1"), [0x60, 0, 0xFF]);
+        assert_eq!(asm("db -1"), [0xFF]);
+        assert_eq!(asm("dw -2"), [0xFE, 0xFF]);
+    }
+    #[test]
+    fn immediate_range_errors() {
+        assert!(asm_err("movi r0, -32769").message.contains("exceeds 16-bit"));
+        assert!(asm_err("movi r0, 65536").message.contains("exceeds 16-bit"));
+        assert!(asm_err("shli r0, 256").message.contains("exceeds 8-bit"));
+        assert!(asm_err("db -129").message.contains("exceeds 8-bit"));
+        assert!(asm_err("movi r0, -foo").message.contains("neither a number"));
+    }
+    #[test]
+    fn existing_encoding_unchanged() {
+        assert_eq!(asm("movi r0, 0x1234"), [0x08, 0, 0x34, 0x12]);
+        assert_eq!(asm("x: jmp x"), [0x30, 0, 0]);
+    }
+
+    // ── 문자열 ──
+    #[test]
+    fn semicolon_and_slashes_inside_string_are_not_comments() {
+        assert_eq!(asm(r#"db "ab;c", 7"#), [b'a', b'b', b';', b'c', 7]);
+        assert_eq!(asm(r#"db "http://x""#), b"http://x");
+    }
+    #[test]
+    fn comment_after_string_is_still_stripped() {
+        assert_eq!(asm(r#"db "a" ; comment"#), [b'a']);
+        assert_eq!(asm(r#"db "a;b" // comment"#), b"a;b");
+    }
+    #[test]
+    fn escapes() {
+        assert_eq!(
+            asm(r#"db "a\nb\t\0\\\"\x41\r""#),
+            [b'a', 0x0A, b'b', 0x09, 0x00, b'\\', b'"', 0x41, 0x0D]
+        );
+    }
+    #[test]
+    fn escaped_quote_does_not_end_string_or_comment_scan() {
+        assert_eq!(asm(r#"db "a\";b" ; real comment"#), b"a\";b");
+    }
+    #[test]
+    fn utf8_string_length_and_label_agree() {
+        // "한" = ED 95 9C (3바이트). end 라벨은 3이어야 한다.
+        assert_eq!(asm("db \"한\"\nend: dw end"), [0xED, 0x95, 0x9C, 0x03, 0x00]);
+    }
+    #[test]
+    fn escape_length_and_label_agree() {
+        // "\n" 은 1바이트. end 라벨은 3이어야 한다.
+        assert_eq!(asm("db \"a\\nb\"\nend: dw end"), [b'a', 0x0A, b'b', 0x03, 0x00]);
+    }
+    #[test]
+    fn string_errors() {
+        let e = asm_err("nop\ndb \"abc");
+        assert_eq!(e.line_no, 2);
+        assert!(e.message.contains("unterminated"));
+        assert!(asm_err(r#"db "a\qb""#).message.contains("unknown escape"));
+        assert!(asm_err(r#"db "\xZZ""#).message.contains("\\x escape"));
+        assert!(asm_err(r#"dw "ab""#).message.contains("not allowed in 'dw'"));
+    }
+    #[test]
+    fn label_with_colon_in_string() {
+        assert_eq!(asm("msg: db \"a:b\"\njmp msg"), [b'a', b':', b'b', 0x30, 0, 0]);
+    }
 }

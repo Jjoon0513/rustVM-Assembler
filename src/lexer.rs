@@ -6,8 +6,9 @@
 pub enum DataItem {
     /// 숫자 리터럴 또는 라벨 이름 ("0x41", "255", "some_label")
     Value(String),
-    /// 문자열 리터럴 — 따옴표 벗긴 raw 내용 ("hello")
-    Str(String),
+    /// 문자열 리터럴 — 이스케이프가 이미 해석된 **최종 바이트열** (UTF-8, `\xNN` 포함).
+    /// 길이 계산(pass 1)과 출력(pass 2)이 같은 바이트열을 쓰도록 렉서에서 확정한다.
+    Str(Vec<u8>),
 }
 
 #[derive(Debug, Clone)]
@@ -20,6 +21,12 @@ pub enum LineKind {
     Dw(Vec<DataItem>),
 }
 
+#[derive(Debug)]
+pub struct LexError {
+    pub line_no: usize,
+    pub message: String,
+}
+
 #[derive(Debug, Clone)]
 pub struct RawLine {
     pub line_no: usize,
@@ -27,7 +34,7 @@ pub struct RawLine {
     pub kind: Option<LineKind>,
 }
 
-pub fn lex(source: &str) -> Vec<RawLine> {
+pub fn lex(source: &str) -> Result<Vec<RawLine>, LexError> {
     let mut lines = Vec::new();
 
     for (i, raw_line) in source.lines().enumerate() {
@@ -44,7 +51,10 @@ pub fn lex(source: &str) -> Vec<RawLine> {
         if let Some(colon_idx) = rest.find(':') {
             let (maybe_label, after) = rest.split_at(colon_idx);
             let maybe_label = maybe_label.trim();
-            if !maybe_label.is_empty() && !maybe_label.contains(char::is_whitespace) {
+            if !maybe_label.is_empty()
+                && !maybe_label.contains(char::is_whitespace)
+                && !maybe_label.contains('"')
+            {
                 label = Some(maybe_label.to_string());
                 rest = after[1..].trim();
             }
@@ -62,7 +72,8 @@ pub fn lex(source: &str) -> Vec<RawLine> {
 
         let kind = match first.as_str() {
             "db" | "dw" => {
-                let items = parse_data_items(after_first);
+                let items = parse_data_items(after_first)
+                    .map_err(|message| LexError { line_no, message })?;
                 if first == "db" { LineKind::Db(items) } else { LineKind::Dw(items) }
             }
             _ => {
@@ -79,12 +90,12 @@ pub fn lex(source: &str) -> Vec<RawLine> {
         lines.push(RawLine { line_no, label, kind: Some(kind) });
     }
 
-    lines
+    Ok(lines)
 }
 
 /// `db "hello", 0x00, 10` 같은 콤마 구분 목록을 파싱
-/// 문자열 안의 콤마는 구분자로 안 봄
-fn parse_data_items(s: &str) -> Vec<DataItem> {
+/// 문자열 안의 콤마는 구분자로 안 보고, 이스케이프(`\n \t \r \0 \\ \" \xNN`)는 여기서 해석한다.
+fn parse_data_items(s: &str) -> Result<Vec<DataItem>, String> {
     let mut items = Vec::new();
     let mut chars = s.char_indices().peekable();
 
@@ -97,19 +108,47 @@ fn parse_data_items(s: &str) -> Vec<DataItem> {
         let Some(&(start, ch)) = chars.peek() else { break };
 
         if ch == '"' {
-            // 문자열 리터럴
             chars.next(); // 여는 따옴표 소비
-            let mut buf = String::new();
+            let mut buf: Vec<u8> = Vec::new();
             let mut closed = false;
-            for (_, c) in chars.by_ref() {
-                if c == '"' { closed = true; break; }
-                // \n, \t, \0 이스케이프 처리
-                if c == '\\' { continue; } // 다음 루프에서 처리 — 간단하게 넘어감
-                buf.push(c);
+            while let Some((_, c)) = chars.next() {
+                match c {
+                    '"' => {
+                        closed = true;
+                        break;
+                    }
+                    '\\' => {
+                        let Some((_, esc)) = chars.next() else { break };
+                        match esc {
+                            'n' => buf.push(b'\n'),
+                            't' => buf.push(b'\t'),
+                            'r' => buf.push(b'\r'),
+                            '0' => buf.push(0),
+                            '\\' => buf.push(b'\\'),
+                            '"' => buf.push(b'"'),
+                            'x' => {
+                                let hi = chars.next().and_then(|(_, c)| c.to_digit(16));
+                                let lo = chars.next().and_then(|(_, c)| c.to_digit(16));
+                                match (hi, lo) {
+                                    (Some(h), Some(l)) => buf.push((h * 16 + l) as u8),
+                                    _ => return Err("invalid \\x escape (expected two hex digits)".to_string()),
+                                }
+                            }
+                            other => {
+                                return Err(format!("unknown escape sequence '\\{other}'"));
+                            }
+                        }
+                    }
+                    other => {
+                        let mut tmp = [0u8; 4];
+                        buf.extend_from_slice(other.encode_utf8(&mut tmp).as_bytes());
+                    }
+                }
             }
-            if closed {
-                items.push(DataItem::Str(buf));
+            if !closed {
+                return Err("unterminated string literal".to_string());
             }
+            items.push(DataItem::Str(buf));
         } else if ch != ',' {
             // 숫자 또는 라벨
             let mut end = start;
@@ -130,17 +169,31 @@ fn parse_data_items(s: &str) -> Vec<DataItem> {
         }
     }
 
-    items
+    Ok(items)
 }
 
+/// `;` 또는 `//` 이후를 주석으로 잘라낸다. 단, 문자열 리터럴(`"..."`) 안은 건드리지 않는다.
 fn strip_comment(line: &str) -> &str {
-    // ';'랑 '//' 둘 다 주석으로 인정. 둘 다 있으면 먼저 나오는 쪽 기준
-    let semi = line.find(';');
-    let slash = line.find("//");
-    match (semi, slash) {
-        (Some(s), Some(sl)) => &line[..s.min(sl)],
-        (Some(s), None) => &line[..s],
-        (None, Some(sl)) => &line[..sl],
-        (None, None) => line,
+    let bytes = line.as_bytes();
+    let mut in_str = false;
+    let mut i = 0;
+    while i < bytes.len() {
+        let b = bytes[i];
+        if in_str {
+            match b {
+                b'\\' => i += 1, // 이스케이프된 다음 바이트는 건너뜀 (\" 가 문자열을 닫지 않도록)
+                b'"' => in_str = false,
+                _ => {}
+            }
+        } else {
+            match b {
+                b'"' => in_str = true,
+                b';' => return &line[..i],
+                b'/' if bytes.get(i + 1) == Some(&b'/') => return &line[..i],
+                _ => {}
+            }
+        }
+        i += 1;
     }
+    line
 }
