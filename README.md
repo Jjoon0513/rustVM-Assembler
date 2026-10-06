@@ -1,4 +1,4 @@
-[![Crates.io](https://img.shields.io/crates/v/rustVM-Assembler)](https://crates.io/crates/rustVM-Aseembler)
+[![Crates.io](https://img.shields.io/crates/v/rustVM-Assembler)](https://crates.io/crates/rustvm-aseembler)
 [![License](https://img.shields.io/github/license/Jjoon0513/rustVM-Assembler)](LICENSE)
 
 
